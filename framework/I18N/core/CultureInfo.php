@@ -13,6 +13,7 @@
  * {@link http://prado.sourceforge.net/}
  *
  * @author Wei Zhuo <weizhuo[at]gmail[dot]com>
+ * @author Fabio Bas <ctrlaltca[at]gmail[dot]com>
  * @package Prado\I18N\core
  */
 
@@ -46,16 +47,11 @@ use Exception;
  * For example, Australian English is "en_AU".
  *
  * @author Xiang Wei Zhuo <weizhuo[at]gmail[dot]com>
+ * @author Fabio Bas <ctrlaltca[at]gmail[dot]com>
  * @package Prado\I18N\core
  */
 class CultureInfo
 {
-	/**
-	 * ICU data filename extension.
-	 * @var string
-	 */
-	private $dataFileExt = '.dat';
-
 	/**
 	 * The ICU data array.
 	 * @var array
@@ -69,16 +65,22 @@ class CultureInfo
 	private $culture;
 
 	/**
-	 * Directory where the ICU data is stored.
-	 * @var string
-	 */
-	private $dataDir;
-
-	/**
-	 * A list of ICU date files loaded.
+	 * A list of CLDR resource bundles loaded
 	 * @var array
 	 */
-	private $dataFiles = array();
+	private $resourceBundles = array();
+
+	/**
+	 * A list of resource bundles keys
+	 * @var array
+	 */
+	protected static $bundleNames = array(
+		'Core' => null,
+		'Currencies' => 'ICUDATA-curr',
+		'Languages' => 'ICUDATA-lang',
+		'Countries' => 'ICUDATA-region',
+		'zoneStrings' => 'ICUDATA-zone',
+	);
 
 	/**
 	 * The current date time format info.
@@ -173,32 +175,10 @@ class CultureInfo
 		if(empty($culture))
 			$culture = 'en';
 
-		$this->dataDir = $this->dataDir();
-		$this->dataFileExt = $this->fileExt();
-
 		$this->setCulture($culture);
 
 		$this->loadCultureData('root');
 		$this->loadCultureData($culture);
-	}
-
-	/**
-	 * Get the default directory for the ICU data.
-	 * The default is the "data" directory for this class.
-	 * @return string directory containing the ICU data.
-	 */
-	protected static function dataDir()
-	{
-		return dirname(__FILE__).'/data/';
-	}
-
-	/**
-	 * Get the filename extension for ICU data. Default is ".dat".
-	 * @return string filename extension for ICU data.
-	 */
-	protected static function fileExt()
-	{
-		return '.dat';
 	}
 
 	/**
@@ -221,16 +201,13 @@ class CultureInfo
 	 */
 	public static function validCulture($culture)
 	{
-		if(preg_match('/^[_\\w]+$/', $culture))
-			return is_file(self::dataDir().$culture.self::fileExt());
-
-		return false;
+		return in_array($culture, self::getCultures());
 	}
 
 	/**
 	 * Set the culture for the current instance. The culture indentifier
 	 * must be of the form "<language>_(country/region)".
-	 * @param string culture identifier, e.g. "fr_FR_EURO".
+	 * @param string culture identifier, e.g. "fr_FR".
 	 */
 	protected function setCulture($culture)
 	{
@@ -244,62 +221,37 @@ class CultureInfo
 	}
 
 	/**
-	 * Load the ICU culture data for the specific culture identifier.
+	 * Load the ICU culture data resource bundles for the specific culture identifier.
 	 * @param string the culture identifier.
 	 */
-	protected function loadCultureData($culture)
+	protected function loadCultureData($cultureName)
 	{
-		$file_parts = explode('_',$culture);
-		$current_part = $file_parts[0];
+		$culture_parts = explode('_', $cultureName);
+		$current_part = $culture_parts[0];
 
-		$files = array($current_part);
-
-		for($i = 1, $k = count($file_parts); $i < $k; ++$i)
+		$culturesToLoad = array($current_part);
+		for($i = 1, $k = count($culture_parts); $i < $k; ++$i)
 		{
-			$current_part .= '_'.$file_parts[$i];
-			$files[] = $current_part;
+			$current_part .= '_'.$culture_parts[$i];
+			$culturesToLoad[] = $current_part;
 		}
 
-		foreach($files as $file)
+		foreach(self::$bundleNames as $key => $bundleName)
 		{
-			$filename = $this->dataDir.$file.$this->dataFileExt;
+			if(!array_key_exists($key, $this->data))
+				$this->data[$key] = array();
+		}
+		foreach($culturesToLoad as $culture)
+		{
+			if(in_array($culture, $this->resourceBundles))
+				continue;
 
-			if(is_file($filename) == false)
-				throw new Exception('Data file for "'.$file.'" was not found.');
-
-			if(in_array($filename, $this->dataFiles) === false)
+			array_unshift($this->resourceBundles, $culture);
+			foreach(self::$bundleNames as $key => $bundleName)
 			{
-				array_unshift($this->dataFiles, $file);
-
-				$data = &$this->getData($filename);
-				$this->data[$file] = &$data;
-
-				if(isset($data['__ALIAS']))
-					$this->loadCultureData($data['__ALIAS'][0]);
-				unset($data);
+				$this->data[$key][$culture] = \ResourceBundle::create($culture, $bundleName, false);
 			}
 		}
-	}
-
-	/**
-	 * Get the data by unserializing the ICU data from disk.
-	 * The data files are cached in a static variable inside
-	 * this function.
-	 * @param string the ICU data filename
-	 * @return array ICU data
-	 */
-	protected function &getData($filename)
-	{
-		static $data = array();
-		static $files = array();
-
-		if(!in_array($filename, $files))
-		{
-			$data[$filename] = unserialize(file_get_contents($filename));
-			$files[] = $filename;
-		}
-
-		return $data[$filename];
 	}
 
 	/**
@@ -316,17 +268,36 @@ class CultureInfo
 	 * @param boolean merge the data from its parents.
 	 * @return mixed the specific ICU data.
 	 */
-	protected function findInfo($path='/', $merge=false)
+	public function findInfo($path='/', $merge=false, $key = null)
 	{
 		$result = array();
-		foreach($this->dataFiles as $section)
-		{
-			$info = $this->searchArray($this->data[$section], $path);
 
+		if($key === null)
+		{
+			// try to guess the bundle from the path. Always defaults to "Core".
+			$key = 'Core';
+			foreach(self::$bundleNames as $bundleName => $icuBundleName)
+			{
+				if(strpos($path, $bundleName) === 0)
+				{
+					$key = $bundleName;
+					break;
+				}
+			}
+		}
+
+		if(!array_key_exists($key, $this->data))
+			return $result;
+		foreach($this->resourceBundles as $culture)
+		{
+			$res = $this->data[$key][$culture];
+			if($res === null)
+				continue;
+			$info = $this->searchResources($res, $path);
 			if($info)
 			{
 				if($merge)
-					$result = array_merge($info,$result);
+					$result = array_merge($result, $info);
 				else
 					return $info;
 			}
@@ -343,20 +314,20 @@ class CultureInfo
 	 * @param string slash "/" separated array path.
 	 * @return mixed the value array using the path
 	 */
-	private function searchArray($info, $path='/')
+	private function searchResources($info, $path='/')
 	{
 		$index = explode('/',$path);
 
-		$array = $info;
-
+		$resource = $info;
 		for($i = 0, $k = count($index); $i < $k; ++$i)
 		{
-			$value = $index[$i];
-			if($i < $k-1 && isset($array[$value]))
-				$array = $array[$value];
-			else if ($i == $k-1 && isset($array[$value]))
-				return $array[$value];
+
+			$resource = $resource->get($index[$i], false);
+			if($resource === null)
+				return null;
 		}
+
+		return $this->simplify($resource);
 	}
 
 	/**
@@ -364,7 +335,7 @@ class CultureInfo
 	 * "<languagecode2>_(country/regioncode2)".
 	 * @return string culture name.
 	 */
-	function getName()
+	public function getName()
 	{
 		return $this->culture;
 	}
@@ -374,13 +345,11 @@ class CultureInfo
 	 * format of displaying dates and times.
 	 * @return DateTimeFormatInfo date time format information for the culture.
 	 */
-	function getDateTimeFormat()
+	public function getDateTimeFormat()
 	{
 		if($this->dateTimeFormat === null)
 		{
-			$calendar = $this->getCalendar();
-			$info = $this->findInfo("calendar/{$calendar}", true);
-			$this->setDateTimeFormat(new DateTimeFormatInfo($info));
+			$this->setDateTimeFormat(new DateTimeFormatInfo($this));
 		}
 
 		return $this->dateTimeFormat;
@@ -390,7 +359,7 @@ class CultureInfo
 	 * Set the date time format information.
 	 * @param DateTimeFormatInfo the new date time format info.
 	 */
-	function setDateTimeFormat($dateTimeFormat)
+	public function setDateTimeFormat($dateTimeFormat)
 	{
 		$this->dateTimeFormat = $dateTimeFormat;
 	}
@@ -399,10 +368,9 @@ class CultureInfo
 	 * Gets the default calendar used by the culture, e.g. "gregorian".
 	 * @return string the default calendar.
 	 */
-	function getCalendar()
+	public function getCalendar()
 	{
-		$info = $this->findInfo('calendar/default');
-		return $info[0];
+		return $this->findInfo('calendar/default');
 	}
 
 	/**
@@ -411,16 +379,16 @@ class CultureInfo
 	 * 'Country' is omitted if the culture is neutral.
 	 * @return array array with language and country as elements, localized.
 	 */
-	function getNativeName()
+	public function getNativeName()
 	{
 		$lang = substr($this->culture,0,2);
 		$reg = substr($this->culture,3,2);
 		$language = $this->findInfo("Languages/{$lang}");
 		$region = $this->findInfo("Countries/{$reg}");
 		if($region)
-			return $language[0].' ('.$region[0].')';
+			return $language.' ('.$region.')';
 		else
-			return $language[0];
+			return $language;
 	}
 
 	/**
@@ -429,7 +397,7 @@ class CultureInfo
 	 * 'Country' is omitted if the culture is neutral.
 	 * @return string language (country), it may locale code string if english name does not exist.
 	 */
-	function getEnglishName()
+	public function getEnglishName()
 	{
 		$lang = substr($this->culture,0,2);
 		$reg = substr($this->culture,3,2);
@@ -441,9 +409,9 @@ class CultureInfo
 
 		$region = $culture->findInfo("Countries/{$reg}");
 		if($region)
-			return $language[0].' ('.$region[0].')';
+			return $language.' ('.$region.')';
 		else
-			return $language[0];
+			return $language;
 	}
 
 	/**
@@ -453,7 +421,7 @@ class CultureInfo
 	 * The invariant culture is assumed to be "en";
 	 * @return CultureInfo invariant culture info is "en".
 	 */
-	static function getInvariantCulture()
+	static public function getInvariantCulture()
 	{
 		static $invariant;
 		if($invariant === null)
@@ -467,7 +435,7 @@ class CultureInfo
 	 * only contains two characters.
 	 * @return boolean true if culture is neutral, false otherwise.
 	 */
-	function getIsNeutralCulture()
+	public function getIsNeutralCulture()
 	{
 		return strlen($this->culture) == 2;
 	}
@@ -477,18 +445,11 @@ class CultureInfo
 	 * format of displaying numbers, currency, and percentage.
 	 * @return NumberFormatInfo the number format info for current culture.
 	 */
-	function getNumberFormat()
+	public function getNumberFormat()
 	{
 		if($this->numberFormat === null)
 		{
-			$elements = $this->findInfo('NumberElements');
-			$patterns = $this->findInfo('NumberPatterns');
-			$currencies = $this->getCurrencies();
-			$data = array(	'NumberElements'=>$elements,
-							'NumberPatterns'=>$patterns,
-							'Currencies' => $currencies);
-
-			$this->setNumberFormat(new NumberFormatInfo($data));
+			$this->setNumberFormat(new NumberFormatInfo($this));
 		}
 		return $this->numberFormat;
 	}
@@ -497,9 +458,18 @@ class CultureInfo
 	 * Set the number format information.
 	 * @param NumberFormatInfo the new number format info.
 	 */
-	function setNumberFormat($numberFormat)
+	public function setNumberFormat($numberFormat)
 	{
 		$this->numberFormat = $numberFormat;
+	}
+
+	/**
+	 * Gets the default number format used by the culture, e.g. "latn".
+	 * @return string the default number format.
+	 */
+	public function getDefaultNumberFormat()
+	{
+		return $this->findInfo('NumberElements/default');
 	}
 
 	/**
@@ -507,7 +477,7 @@ class CultureInfo
 	 * current CultureInfo
 	 * @return CultureInfo parent culture information.
 	 */
-	function getParent()
+	public function getParent()
 	{
 		if(strlen($this->culture) == 2)
 			return $this->getInvariantCulture();
@@ -525,43 +495,28 @@ class CultureInfo
 	 * or CultureInfo::SPECIFIC.
 	 * @return array list of culture information available.
 	 */
-	static function getCultures($type=CultureInfo::ALL)
+	static public function getCultures($type=CultureInfo::ALL)
 	{
-		$dataDir = CultureInfo::dataDir();
-		$dataExt = CultureInfo::fileExt();
-		$dir = dir($dataDir);
-
-		$neutral = array();
-		$specific = array();
-
-		while (false !== ($entry = $dir->read()))
-		{
-			if(is_file($dataDir.$entry)
-				&& substr($entry,-4) == $dataExt
-				&& $entry != 'root'.$dataExt)
-			{
-				$culture = substr($entry,0,-4);
-				if(strlen($culture) == 2)
-					$neutral[] = $culture;
-				else
-					$specific[] = $culture;
-			}
-		}
-		$dir->close();
+		$all = \ResourceBundle::getLocales('');
 
 		switch($type)
 		{
 			case CultureInfo::ALL :
-				$all = 	array_merge($neutral, $specific);
-				sort($all);
 				return $all;
-				break;
 			case CultureInfo::NEUTRAL :
-				return $neutral;
-				break;
+				foreach($all as $key => $culture)
+				{
+					if(strlen($culture) != 2)
+						unset($all[$key]);
+				}
+				return $all;
 			case CultureInfo::SPECIFIC :
-				return $specific;
-				break;
+				foreach($all as $key => $culture)
+				{
+					if(strlen($culture) == 2)
+						unset($all[$key]);
+				}
+				return $all;
 		}
 	}
 
@@ -572,8 +527,18 @@ class CultureInfo
 	 * @param array with single elements arrays
 	 * @return array simplified array.
 	 */
-	private function simplify($array)
+	protected function simplify($obj)
 	{
+		if(is_scalar($obj)) {
+			return $obj;
+		} elseif($obj instanceof \ResourceBundle) {
+			$array = array();
+			foreach($obj as $k => $v)
+				$array[$k] = $v;
+		} else {
+			$array = $obj;
+		}
+
 		for($i = 0, $k = count($array); $i<$k; ++$i)
 		{
 			$key = key($array);
@@ -589,45 +554,69 @@ class CultureInfo
 	 * Get a list of countries in the language of the localized version.
 	 * @return array a list of localized country names.
 	 */
-	function getCountries()
+	public function getCountries()
 	{
-		return $this->simplify($this->findInfo('Countries',true));
+		return $this->simplify($this->findInfo('Countries', true, 'Countries'));
 	}
 
 	/**
 	 * Get a list of currencies in the language of the localized version.
 	 * @return array a list of localized currencies.
 	 */
-	function getCurrencies()
+	public function getCurrencies()
 	{
-		return $this->findInfo('Currencies',true);
+		static $arr;
+		if($arr === null)
+		{
+			$arr = $this->findInfo('Currencies', true, 'Currencies');
+			foreach($arr as $k => $v)
+				$arr[$k] = $this->simplify($v);
+		}
+		return $arr;
 	}
 
 	/**
 	 * Get a list of languages in the language of the localized version.
 	 * @return array list of localized language names.
 	 */
-	function getLanguages()
+	public function getLanguages()
 	{
-		return $this->simplify($this->findInfo('Languages',true));
+		return $this->simplify($this->findInfo('Languages', true, 'Languages'));
 	}
 
 	/**
 	 * Get a list of scripts in the language of the localized version.
 	 * @return array list of localized script names.
 	 */
-	function getScripts()
+	public function getScripts()
 	{
-		return $this->simplify($this->findInfo('Scripts',true));
+		return $this->simplify($this->findInfo('Scripts', true, 'Languages'));
 	}
 
 	/**
 	 * Get a list of timezones in the language of the localized version.
 	 * @return array list of localized timezones.
 	 */
-	function getTimeZones()
+	public function getTimeZones()
 	{
-		return $this->simplify($this->findInfo('zoneStrings',true));
+		static $arr;
+		if($arr === null)
+		{
+			$validPrefixes = array('Africa', 'America', 'Antarctica', 'Arctic', 'Asia', 'Atlantic', 'Australia', 'Etc', 'Europe', 'Indian', 'Pacific');
+			$tmp = $this->findInfo('zoneStrings', true, 'zoneStrings');
+			foreach($tmp as $k => $v)
+			{
+				foreach($validPrefixes as $prefix)
+				{
+					if(strpos($k, $prefix) === 0)
+					{
+						$arr[] = str_replace(':', '/', $k);
+						break;
+					}
+				}
+			}
+		}
+		return $arr;
 	}
 }
 
